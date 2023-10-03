@@ -14,7 +14,7 @@ Parameters:
   pSSOAdminRole:
     Description: 'SSO Admin Role ARN from this Account '
     Type: String
-    Default: arn:aws:iam::576393599494:role/Admin #devrole
+    Default: arn:aws:iam::1234567890:role/Admin #devrole
   pCodeBuildSubnet:
     Description: 'Codebuild private subnet as a CommaDelimitedList'
     Type: CommaDelimitedList
@@ -37,15 +37,15 @@ Parameters:
   pCloudFormationServiceRole:
     Description: 'Cloudformation service Role'
     Type: String
-    Default: "arn:aws:iam::576393599494:role/Admin" #devrole
+    Default: "arn:aws:iam::1234567890:role/Admin" #devrole
   pTestingAccountId:
     Description: 'Testing Account Id'
     Type: String
-    Default: "487269258483" #testrole
+    Default: "1234567890" #test_account_id
   pProductionAccountId:
     Description: 'Production Account Id'
     Type: String
-    Default: "608377680862"
+    Default: "1234567890" #prod_account_id
   pWhitesourceApiKey:
     Description: 'Key to connect to WhiteSource APP'
     Type: String
@@ -67,15 +67,11 @@ Parameters:
   pCrossAccountRoleTesting:
     Type: String
     Description: "Role ARN for Cross Account Access in Testing"
-    Default: "arn:aws:iam::487269258483:role/new-cross-account-anycomp-CrossAccountAccessRoleAn-1GAKCZ3YZ376F"  
+    Default: "arn:aws:iam::1234567890:role/new-cross-account-anycomp-CrossAccountAccessRoleAn-1GAKCZ3YZ376F"  #test_crossaccount_role
   pCrossAccountRoleProduction:
     Type: String
     Description: "Role ARN for Cross Account Access in Production"
-    Default: "arn:aws:iam::608377680862:role/new-cross-account-role-prod-CrossAccountAccessRole-1PKNFOGIQ9ZOD" 
-  # pCrossAccountRoleProduction:
-  #   Type: String
-  #   Description: "Role ARN for Cross Account Access in Production"
-  #   Default: "arn:aws:iam::487269258483:role/CrossAccountNew" #testrole
+    Default: "arn:aws:iam::1234567890:role/new-cross-account-role-prod-CrossAccountAccessRole-1PKNFOGIQ9ZOD" #prod_crossaccount_role
     
 
 
@@ -388,6 +384,31 @@ Resources:
         GroupDescription: Codebuild SG
         VpcId: !Ref pCodeBuildVPC
 
+  MyRepository: 
+  Type: AWS::ECR::Repository
+  Properties: 
+    RepositoryName: "anycompany-test"
+    ImageScanningConfiguration: 
+      ScanOnPush: true
+    RepositoryPolicyText: 
+      Version: "2012-10-17"
+      Statement: 
+        - 
+          Sid: AllowPushPull
+          Effect: Allow
+          Principal: 
+            AWS: 
+              - "arn:aws:iam::123456789012:user/Admin" #TestAccountId
+              - "arn:aws:iam::123456789012:user/Admin" #ProdAccountId
+          Action: 
+            - "ecr:GetDownloadUrlForLayer"
+            - "ecr:BatchGetImage"
+            - "ecr:BatchCheckLayerAvailability"
+            - "ecr:PutImage"
+            - "ecr:InitiateLayerUpload"
+            - "ecr:UploadLayerPart"
+            - "ecr:CompleteLayerUpload"
+
   rCodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties: 
@@ -456,7 +477,7 @@ Resources:
               Configuration:
                 ProjectName: !Ref rCodeBuildProject
                 PrimarySource: SourceArtifact
-                EnvironmentVariables: '[{"name":"SERVICE","value":"new-ecs-infra-ECSService-AKCUlV2Ihz6N","type":"PLAINTEXT"},{"name":"AWS_DEFAULT_REGION","value":"us-east-1","type":"PLAINTEXT"},{"name":"REPOSITORY_URI","value":"576393599494.dkr.ecr.us-east-1.amazonaws.com/anycompany-test"}]'
+                EnvironmentVariables: '[{"name":"SERVICE","value":"new-ecs-infra-ECSService-AKCUlV2Ihz6N","type":"PLAINTEXT"},{"name":"AWS_DEFAULT_REGION","value":"us-east-1","type":"PLAINTEXT"},{"name":"REPOSITORY_URI","value":"ECR Repo URI"}]' #Add ECR Repo URI
               OutputArtifacts:
                 - Name: BuildArtifact
               InputArtifacts:
