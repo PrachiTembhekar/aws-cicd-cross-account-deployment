@@ -1,0 +1,29 @@
+Parameters:
+  privatesubnet1:
+    Type: String
+
+  privatesubnet2:
+    Type: String
+
+Resources:
+  ECSService:
+    Type: AWS::ECS::Service
+    # DependsOn: HTTPListener
+    # DependsOn: HTTPSListener
+    Properties:
+      LaunchType: FARGATE
+      Cluster: new-cluster
+      DesiredCount: 0
+      TaskDefinition: new-anycompany-prod
+      DeploymentController: 
+        Type: CODE_DEPLOY
+      HealthCheckGracePeriodSeconds: 300
+      SchedulingStrategy: REPLICA
+      NetworkConfiguration:
+          AwsvpcConfiguration:
+            AssignPublicIp: DISABLED
+            Subnets: [!Ref privatesubnet1 , !Ref privatesubnet2]
+      LoadBalancers:
+        - TargetGroupArn: arn:aws:elasticloadbalancing:us-east-1:608377680862:targetgroup/TargetGroup1/d18c87e013000697
+          ContainerPort: 80
+          ContainerName: anycompany-test
