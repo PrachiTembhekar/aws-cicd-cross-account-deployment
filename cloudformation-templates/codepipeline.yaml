@@ -1,0 +1,539 @@
+###################################################################################
+# Prerequisites: 
+#   - CodeDeploy deploy exists. Update ApplicationName and Deploy as needed.
+
+# Manual Changes
+#1. Chnage the Image URI in CodeBuild Process Manually
+###################################################################################
+
+Parameters:
+  pCodeBuildVPC:
+    Description: 'Codebuild VPC'
+    Type: String
+    Type: AWS::EC2::VPC::Id
+  pSSOAdminRole:
+    Description: 'SSO Admin Role ARN from this Account '
+    Type: String
+    Default: arn:aws:iam::576393599494:role/Admin #devrole
+  pCodeBuildSubnet:
+    Description: 'Codebuild private subnet as a CommaDelimitedList'
+    Type: CommaDelimitedList
+  pApplicationNameTesting:
+    Description: 'CodeDeploy Testing application name'
+    Type: String
+    Default: new-anycompany-test
+  pDeploymentGroupTesting:
+    Description: 'CodeDeploy Testing deployment group'
+    Type: String
+    Default: new-anycompany-dg
+  pApplicationNameProduction:
+    Description: 'CodeDeploy Production application name'
+    Type: String
+    Default: new-anycompany-prod
+  pDeploymentGroupProduction:
+    Description: 'CodeDeploy Production deployment group'
+    Type: String
+    Default: new-anycompany-dg
+  pCloudFormationServiceRole:
+    Description: 'Cloudformation service Role'
+    Type: String
+    Default: "arn:aws:iam::576393599494:role/Admin" #devrole
+  pTestingAccountId:
+    Description: 'Testing Account Id'
+    Type: String
+    Default: "487269258483" #testrole
+  pProductionAccountId:
+    Description: 'Production Account Id'
+    Type: String
+    Default: "608377680862"
+  pWhitesourceApiKey:
+    Description: 'Key to connect to WhiteSource APP'
+    Type: String
+  pFullRepositoryId:
+    Description: 'Repository ID for this Application from Github. eg: eVisit/Express '
+    Type: String
+  pBranch:
+    Description: 'Github branch' 
+    Type: String
+    Default: "master"
+  pBuildDockerImage:
+    Type: String
+    Default: aws/codebuild/amazonlinux2-x86_64-standard:2.0
+    Description: Docker image to use for the build phase
+  pECRname:
+    Type: String
+    Description: "ECR docker URI"
+    Default: anycompany-test
+  pCrossAccountRoleTesting:
+    Type: String
+    Description: "Role ARN for Cross Account Access in Testing"
+    Default: "arn:aws:iam::487269258483:role/new-cross-account-anycomp-CrossAccountAccessRoleAn-1GAKCZ3YZ376F"  
+  pCrossAccountRoleProduction:
+    Type: String
+    Description: "Role ARN for Cross Account Access in Production"
+    Default: "arn:aws:iam::608377680862:role/new-cross-account-role-prod-CrossAccountAccessRole-1PKNFOGIQ9ZOD" 
+  # pCrossAccountRoleProduction:
+  #   Type: String
+  #   Description: "Role ARN for Cross Account Access in Production"
+  #   Default: "arn:aws:iam::487269258483:role/CrossAccountNew" #testrole
+    
+
+
+Resources:
+  rECR:
+      Type: "AWS::ECR::Repository"
+      Properties:
+        RepositoryName: !Ref pECRname
+        RepositoryPolicyText: 
+          Version: "2012-10-17"
+          Statement: 
+            - 
+              Sid: AllowPushPull
+              Effect: Allow
+              Principal: 
+                AWS: 
+                  - !Join
+                      - ''
+                      - - 'arn:aws:iam::'
+                        - !Ref pTestingAccountId
+                        - ':root'
+                  - !Join
+                      - ''
+                      - - 'arn:aws:iam::'
+                        - !Ref pProductionAccountId
+                        - ':root'
+              Action: 
+                - "ecr:GetDownloadUrlForLayer"
+                - "ecr:BatchGetImage"
+                - "ecr:BatchCheckLayerAvailability"
+                - "ecr:InitiateLayerUpload"
+                - "ecr:UploadLayerPart"
+                - "ecr:CompleteLayerUpload"
+  rKMSs3Bucket:
+    Type: AWS::KMS::Key
+    DependsOn:
+      - rCodePipelineServiceRole
+      - rCodeBuildServiceRole
+    Properties: 
+      Description: 'S3 encryption key'
+      PendingWindowInDays: 7
+      Enabled: True
+      EnableKeyRotation: False
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal: 
+            AWS:
+              - !Ref pCloudFormationServiceRole
+              - !Ref pSSOAdminRole
+          Action: kms:*
+          Resource: '*'
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS:
+              - !GetAtt rCodePipelineServiceRole.Arn
+              - !GetAtt rCodeBuildServiceRole.Arn
+              - !Join
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref pTestingAccountId
+                    - ':root'
+              - !Join
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref pProductionAccountId
+                    - ':root'
+          Action:
+          - kms:DescribeKey
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:ReEncrypt*
+          - kms:GenerateDataKey
+          - kms:GenerateDataKeyWithoutPlaintext
+          Resource: '*'
+  rKMSNames3Bucket:
+    Type: AWS::KMS::Alias
+    Properties: 
+      AliasName: !Sub 'alias/kms-codepipeline-${AWS::StackName}'
+      TargetKeyId: !GetAtt rKMSs3Bucket.KeyId
+  
+  rCodePipelineArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - rKMSs3Bucket
+    Properties:
+      BucketName: !Sub 's3-codepipeline-${AWS::Region}-${AWS::AccountId}-${AWS::StackName}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref rKMSs3Bucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+  rCodePipelineArtifactStoreBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn:
+      - rCodeBuildServiceRole
+    Properties:
+      Bucket: !Ref rCodePipelineArtifactStoreBucket
+      PolicyDocument:
+        Statement:
+        - Action: 
+            - 's3:PutObject'
+          Sid: DenyUnEncryptedObjectUploads
+          Effect: Deny
+          Principal: '*'
+          Resource: !Join [ '', [ !GetAtt rCodePipelineArtifactStoreBucket.Arn, '/*' ] ]
+          Condition:
+            StringNotEquals: 
+              s3:x-amz-server-side-encryption: aws:kms
+        - Action: 
+            - 's3:*'
+          Sid: DenyInsecureConnections
+          Effect: Deny
+          Principal: '*'
+          Resource: !Join [ '', [ !GetAtt rCodePipelineArtifactStoreBucket.Arn, '/*' ] ]
+          Condition:
+            Bool:
+              aws:SecureTransport: false
+        - Action:
+            - 's3:Get*'
+            - 's3:Put*'
+          Effect: Allow
+          Principal:
+            AWS:  
+              - !Join
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref pTestingAccountId
+                    - ':root'
+              - !Join
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref pProductionAccountId
+                    - ':root'
+              - !GetAtt rCodeBuildServiceRole.Arn
+          Resource: !Join [ '', [ !GetAtt rCodePipelineArtifactStoreBucket.Arn, '/*' ] ]
+        - Action:
+            - 's3:ListBucket'
+          Effect: Allow
+          Principal: 
+            AWS:
+              - !Join
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref pTestingAccountId
+                    - ':root'
+              - !Join
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref pProductionAccountId
+                    - ':root'
+          Resource: !GetAtt rCodePipelineArtifactStoreBucket.Arn
+            
+  rCodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /service-role/
+      Policies:
+        -
+          PolicyName: !Sub '${AWS::StackName}-codepipeline-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - '*'
+                  - codecommit:CancelUploadArchive
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:UploadArchive
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - codedeploy:*
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - codebuild:*
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - devicefarm:ListProjects
+                  - devicefarm:ListDevicePools
+                  - devicefarm:GetRun
+                  - devicefarm:GetUpload
+                  - devicefarm:CreateUpload
+                  - devicefarm:ScheduleRun
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - cloudwatch:*
+                  - s3:*
+                  - sns:*
+                Resource: '*'
+        -
+          PolicyName: !Sub '${AWS::StackName}-AssumeRolePolicyFoTesting'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource:
+                  - !Join
+                      - ''
+                      - - 'arn:aws:iam::'
+                        - !Ref pTestingAccountId
+                        - ':role/*'
+        -
+          PolicyName: !Sub '${AWS::StackName}-AssumeRolePolicyForProduction'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource:
+                  - !Join
+                      - ''
+                      - - 'arn:aws:iam::'
+                        - !Ref pProductionAccountId
+                        - ':role/*'
+
+  rCodeBuildServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole' 
+      Path: /
+      Policies:
+        -
+          PolicyName: !Sub '${AWS::StackName}-codebuild-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeDhcpOptions
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                  - logs:*
+                  - ec2:CreateNetworkInterfacePermission
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:GetRepositoryPolicy
+                  - ecr:DescribeRepositories
+                  - ecr:ListImages
+                  - ecr:DescribeImages
+                  - ecr:BatchGetImage
+                  - ecr:GetLifecyclePolicy
+                  - ecr:GetLifecyclePolicyPreview
+                  - ecr:ListTagsForResource
+                  - ecr:DescribeImageScanFindings
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - s3:*
+                Resource: '*'
+  rCodeBuildSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Codebuild SG
+        VpcId: !Ref pCodeBuildVPC
+
+  rCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties: 
+      Description: This is a Codebuild Project
+      Artifacts:
+        Type: CODEPIPELINE
+        EncryptionDisabled: true
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: ENVIRONMENT
+            Type: PLAINTEXT
+            Value: Testing
+        Image: !Ref pBuildDockerImage
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Type: PLAINTEXT
+            Value: 'us-east-1'
+          - Name: ACCOUNT_ID
+            Type: PLAINTEXT
+            Value: '576393599494'
+          - Name: IMAGE_REPO_NAME
+            Type: PLAINTEXT
+            Value: 'anycompany-test'
+          
+      ServiceRole: !Ref rCodeBuildServiceRole
+      Source:
+        Type: CODEPIPELINE
+
+  rAppPipeline: 
+    Type: AWS::CodePipeline::Pipeline
+    Properties: 
+      Name: !Sub '${AWS::StackName}'
+      RoleArn: 
+        !GetAtt rCodePipelineServiceRole.Arn
+      Stages: 
+        - 
+          Name: Source
+          Actions: 
+            - 
+              Name: GitHub-CodeCommit
+              ActionTypeId:
+                
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              Configuration:
+                RepositoryName: anycompany-demo-app #codecommit-repo-name
+                BranchName: master
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+        -
+          Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ProjectName: !Ref rCodeBuildProject
+                PrimarySource: SourceArtifact
+                EnvironmentVariables: '[{"name":"SERVICE","value":"new-ecs-infra-ECSService-AKCUlV2Ihz6N","type":"PLAINTEXT"},{"name":"AWS_DEFAULT_REGION","value":"us-east-1","type":"PLAINTEXT"},{"name":"REPOSITORY_URI","value":"576393599494.dkr.ecr.us-east-1.amazonaws.com/anycompany-test"}]'
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact     
+        -
+          Name: DeployToTest
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ApplicationName: !Ref pApplicationNameTesting
+                DeploymentGroupName: !Ref pDeploymentGroupTesting
+                AppSpecTemplateArtifact: BuildArtifact
+                Image1ArtifactName: BuildArtifact
+                Image1ContainerName: IMAGE
+                TaskDefinitionTemplatePath: taskdef.json
+                AppSpecTemplatePath: appspec.yaml
+                TaskDefinitionTemplateArtifact: BuildArtifact
+              OutputArtifacts: []
+              InputArtifacts:
+                - Name: BuildArtifact
+              Region: us-east-1
+              RoleArn: !Ref pCrossAccountRoleTesting
+              Namespace: DeployToTestVariables
+        -
+          Name: ApprovalToPromoteProduction
+          Actions:
+            - Name: EngineeringLead
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              RunOrder: 1
+              Region: us-east-1
+            - Name: QA
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              RunOrder: 1
+        -
+          Name: DeployToProd
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ApplicationName: !Ref pApplicationNameProduction
+                DeploymentGroupName: !Ref pDeploymentGroupProduction
+                AppSpecTemplateArtifact: BuildArtifact
+                Image1ArtifactName: BuildArtifact
+                Image1ContainerName: IMAGE
+                TaskDefinitionTemplatePath: taskdef1.json
+                AppSpecTemplatePath: appspec.yaml
+                TaskDefinitionTemplateArtifact: BuildArtifact
+              OutputArtifacts: []
+              InputArtifacts:
+                - Name: BuildArtifact
+              Region: us-east-1
+              RoleArn: !Ref pCrossAccountRoleProduction
+              Namespace: DeployToProdVariables
+
+      ArtifactStore: 
+        Type: S3
+        Location: !Ref rCodePipelineArtifactStoreBucket
+        EncryptionKey: 
+          Id: !GetAtt rKMSs3Bucket.Arn
+          Type: KMS
+
