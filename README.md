@@ -18,3 +18,5 @@ IAM Roles Across Accounts: Secure deployment is achieved by creating and managin
 Automatic and Manual Approvals: The deployment pipeline incorporates both automatic and manual approvals, providing a balance between automation and human validation.
 
 SNS Integration: Notifications are streamlined through Simple Notification Service (SNS), allowing for efficient communication during the deployment process.
+
+![AB2 Arch Diagram](https://github.com/PrachiTembhekar/aws-cicd-cross-account-deployment/assets/60718974/ef5b4142-10c3-4a6b-8d1f-09583c6be5b7)
